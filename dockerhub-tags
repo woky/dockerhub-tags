@@ -1,0 +1,41 @@
+#!/bin/zsh
+set -euo pipefail
+
+PAGE_SIZE=1000
+
+if [[ -v _NEXT_URL ]]; then
+	if [[ -v _DOCKERHUB_TOKEN ]]; then
+		content=$(curl -fsSL -H@- $_NEXT_URL <<<"Authorization:$_DOCKERHUB_TOKEN")
+	else
+		content=$(curl -fsSL $_NEXT_URL)
+	fi
+	jq -r '.results[]' <<<$content
+	_NEXT_URL=$(jq -r '.next | select(. != null)' <<<$content)
+	if [[ -z $_NEXT_URL ]]; then
+		exit
+	fi
+	exec $0
+fi
+
+if [[ -v DOCKERHUB_USERNAME && -v DOCKERHUB_PASSWORD ]]; then
+	_DOCKERHUB_TOKEN=$(
+		echo $DOCKERHUB_PASSWORD \
+		| jq -rRc --arg u $DOCKERHUB_USERNAME '{username: $u, password: .}' \
+		| curl -fsSL --json @- https://hub.docker.com/v2/users/login \
+		| jq .token
+	)
+	export _DOCKERHUB_TOKEN
+fi
+
+if [[ $# -ne 1 ]]; then
+	echo "Usage: $0 <image>" >&2
+	exit 2
+fi
+
+image=$1
+if [[ $image != */* ]]; then
+	image=library/$image
+fi
+export _NEXT_URL="https://hub.docker.com/v2/repositories/$image/tags?page_size=$PAGE_SIZE"
+
+$0 | jq -rs .

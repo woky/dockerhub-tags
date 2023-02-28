@@ -1,0 +1,55 @@
+#!/bin/zsh
+set -euo pipefail
+
+outdir=out
+mkdir -p $outdir
+
+get_digest()
+{
+	echo "sha256:$(sha256sum | awk '{print $1}')"
+}
+
+get_manifest_by_tag()
+{
+	local name_tag=$outdir/manifest:$1
+	if [[ ! -r $name_tag ]]; then
+		skopeo inspect --raw docker://docker.io/ubuntu:$1 >$name_tag
+		local digest
+		digest=$(get_digest <$name_tag)
+		local name_digest=$outdir/manifest@$digest
+		mv $name_tag $name_digest
+		ln -sr $name_digest $name_tag
+	fi
+	cat $name_tag
+}
+
+get_manifest_by_digest()
+{
+	local name=$outdir/manifest@$1
+	if [[ ! -f $name ]]; then
+		skopeo inspect --raw docker://docker.io/ubuntu@$1 >$name
+	fi
+	cat $name
+}
+
+jq -c <tags-api '.[]' | while read tag_data; do
+	jq -r <<<$tag_data '.name + " " + .digest' | read tag api_digest
+	file_digest=$(get_manifest_by_tag $tag | get_digest)
+	if [[ $api_digest ]]; then
+		if [[ $api_digest != $file_digest ]]; then
+			echo 0 $tag index $api_digest $file_digest
+		else
+			echo 1 $tag index $api_digest $file_digest
+		fi
+	else
+		digests1=$(jq -r <<<$tag_data '.images[] | (.architecture + " " + .digest)' | sort -k1,1)
+		digests2=$(get_manifest_by_tag $tag | jq -r '.manifests[] | (.platform.architecture + " " + .digest)' | sort -k1,1)
+		join =(<<<$digests1) =(<<<$digests2) | while read arch api_digest manifest_digest; do
+			if [[ $api_digest != $manifest_digest ]]; then
+				echo 0 $tag $arch $api_digest $manifest_digest
+			else
+				echo 1 $tag $arch $api_digest $manifest_digest
+			fi
+		done
+	fi
+done
